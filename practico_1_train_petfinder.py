@@ -17,6 +17,7 @@ import numpy
 import pandas
 import tensorflow as tf
 from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from tensorflow.keras import layers, models
 from tensorflow.keras.datasets import mnist
@@ -28,7 +29,7 @@ import matplotlib.pyplot as plt
 from IPython.display import SVG
 from tensorflow.keras.utils import model_to_dot
 TARGET_COL = 'AdoptionSpeed'
-
+tf.random.set_seed(1234)
 
 def read_args():
     parser = argparse.ArgumentParser(
@@ -60,11 +61,9 @@ def process_features(df, one_hot_columns, numeric_columns, embedded_columns, tes
     for one_hot_col, max_value in one_hot_columns.items():
         direct_features.append(tf.keras.utils.to_categorical(df[one_hot_col] - 1, max_value))
 
-    # TODO Create and append numeric columns
-    # Don't forget to normalize!
-    # ....
+    df['SQAge'] = df['Age']  ** 2
     
-    scaler = MinMaxScaler()
+    scaler = StandardScaler()
     direct_features.append(scaler.fit_transform(df[numeric_columns]))
     
     
@@ -99,7 +98,7 @@ def load_dataset(dataset_dir, batch_size):
     
     return dataset, dev_dataset, test_dataset
 
-def build_model(nlabels, direct_features_input_shape, embedded_columns):
+def build_model(nlabels, direct_features_input_shape, embedded_columns, hidden_layer_sizes, dropout):
     embedding_layers = []
     inputs = []
     for embedded_col, max_value in embedded_columns.items():
@@ -117,24 +116,46 @@ def build_model(nlabels, direct_features_input_shape, embedded_columns):
         
     # Concatenate everything together
     features = layers.concatenate(embedding_layers + [direct_features_input])
-
-    dense1 = layers.Dense(100, activation='relu')(features)
-    dropout1 = layers.Dropout(0.3)(dense1)
-    dense2 = layers.Dense(50, activation='relu')(dropout1)
-    dropout2 = layers.Dropout(0.5)(dense2)
-    output_layer = layers.Dense(nlabels, activation='softmax')(dropout2)
+    next_layer = features
+    for x, hidden_layer_num in enumerate(hidden_layer_sizes):
+        dense1 = layers.Dense(hidden_layer_num, activation='relu')(next_layer)
+        dropout1 = layers.Dropout(dropout[x])(dense1)
+        next_layer = dropout1
+        
+    output_layer = layers.Dense(nlabels, activation='softmax')(next_layer)
 
     model = models.Model(inputs=inputs, outputs=output_layer)
 
     return model
 
+def plot_history(history):
+    hist = pandas.DataFrame(history.history)
+    hist['epoch'] = history.epoch
+
+    plt.figure()
+    plt.xlabel('Epoch')
+    plt.ylabel('Mean Abs Error [MPG]')
+    plt.plot(hist['epoch'], hist['loss'],
+           label='Loss')
+    plt.plot(hist['epoch'], hist['accuracy'],
+           label = 'Accuracy')
+    
+    
+    plt.plot(hist['epoch'], hist['val_loss'],
+           label='Validation Loss')
+    plt.plot(hist['epoch'], hist['val_accuracy'],
+           label = 'Validation Accuracy')
+    
+    
+    plt.legend()
+    plt.savefig('output/history.png')
+    mlflow.log_artifact('output/history.png') 
+
 
 def main():
     tf.keras.backend.clear_session()
     args = read_args()
-    #dataset_dir = ''
     batch_size = 64
-    #epochs = 20
     dataset, dev_dataset, test_dataset = load_dataset(args.dataset_dir, args.batch_size)
     nlabels = dataset[TARGET_COL].unique().shape[0]
     
@@ -147,7 +168,7 @@ def main():
         embedded_col: dataset[embedded_col].max() + 1
         for embedded_col in ['Breed1','Breed2']
     }
-    numeric_columns = ['Age', 'Fee']
+    numeric_columns = ['Age', 'Fee', 'SQAge']
     
     # TODO (optional) put these three types of columns in the same dictionary with "column types"
     X_train, y_train = process_features(dataset, one_hot_columns, numeric_columns, embedded_columns)
@@ -157,14 +178,11 @@ def main():
     
     # Create the tensorflow Dataset
     
-    # TODO shuffle the train dataset!
-    train_ds = tf.data.Dataset.from_tensor_slices((X_train, y_train)).shuffle(5).batch(batch_size)
-    dev_ds = tf.data.Dataset.from_tensor_slices((X_dev, y_dev)).shuffle(5).batch(batch_size)
+    train_ds = tf.data.Dataset.from_tensor_slices((X_train, y_train)).shuffle(len(X_train)).batch(batch_size)
+    dev_ds = tf.data.Dataset.from_tensor_slices((X_dev, y_dev)).batch(batch_size)
     test_ds = tf.data.Dataset.from_tensor_slices(X_test).shuffle(5).batch(batch_size)
     
-    # TODO: Build the Keras model
-    
-    model = build_model(nlabels, direct_features_input_shape, embedded_columns)   
+    model = build_model(nlabels, direct_features_input_shape, embedded_columns, args.hidden_layer_sizes, args.dropout)   
 
     print(model.summary())
     
@@ -174,15 +192,16 @@ def main():
         
     #predictions = model.predict(test_ds)
     #print(predictions)
-    #mlflow.set_experiment(args.experiment_name)
+    mlflow.set_experiment(args.experiment_name)
     
     with mlflow.start_run(nested=True):
         # Log model hiperparameters first
         mlflow.log_param('hidden_layer_size', args.hidden_layer_sizes)
         mlflow.log_param('embedded_columns', embedded_columns)
         mlflow.log_param('one_hot_columns', one_hot_columns)
-        mlflow.log_param('numerical_columns', numeric_columns)  # Not using these yet
+        mlflow.log_param('numerical_columns', numeric_columns)
         mlflow.log_param('epochs', args.epochs)
+        mlflow.log_param('Dropout', args.dropout)
 
         # Train
         history = model.fit(train_ds, 
@@ -190,7 +209,9 @@ def main():
                             validation_data=dev_ds,
                             verbose=1);
 
-        # TODO: analyze history to see if model converges/overfits
+        
+
+        plot_history(history)
         
         # TODO: Evaluate the model, calculating the metrics.
         # Option 1: Use the model.evaluate() method. For this, the model must be
@@ -216,10 +237,6 @@ def main():
         results = pandas.Series(predictions,name="AdoptionSpeed")
         submission = pandas.concat([pandas.Series(test_dataset.PID,name = "PID"),results],axis = 1)
         submission.to_csv("result_submission.csv",index=False)
-
-        # TODO: Convert predictions to classes
-        # TODO: Save the results for submission
-        # ...
         print(predictions)
 
         
