@@ -17,6 +17,7 @@ import numpy
 import pandas
 import tensorflow as tf
 from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from tensorflow.keras import layers, models
 from tensorflow.keras.datasets import mnist
@@ -27,6 +28,20 @@ import matplotlib
 import matplotlib.pyplot as plt
 from IPython.display import SVG
 from tensorflow.keras.utils import model_to_dot
+import nltk
+import numpy as np
+import os
+import pandas as pd
+import tensorflow as tf
+
+from IPython.display import SVG
+from gensim import corpora
+from nltk import word_tokenize
+from nltk.corpus import stopwords
+from pprint import pprint
+
+nltk.download(["punkt", "stopwords"]);
+
 TARGET_COL = 'AdoptionSpeed'
 
 
@@ -60,9 +75,7 @@ def process_features(df, one_hot_columns, numeric_columns, embedded_columns, tes
     for one_hot_col, max_value in one_hot_columns.items():
         direct_features.append(tf.keras.utils.to_categorical(df[one_hot_col] - 1, max_value))
 
-    # TODO Create and append numeric columns
-    # Don't forget to normalize!
-    # ....
+    df['SQAge'] = df['Age']  ** 2
     
     scaler = MinMaxScaler()
     direct_features.append(scaler.fit_transform(df[numeric_columns]))
@@ -147,7 +160,7 @@ def main():
         embedded_col: dataset[embedded_col].max() + 1
         for embedded_col in ['Breed1','Breed2']
     }
-    numeric_columns = ['Age', 'Fee']
+    numeric_columns = ['Age', 'Fee', 'SQAge']
     
     # TODO (optional) put these three types of columns in the same dictionary with "column types"
     X_train, y_train = process_features(dataset, one_hot_columns, numeric_columns, embedded_columns)
@@ -157,9 +170,8 @@ def main():
     
     # Create the tensorflow Dataset
     
-    # TODO shuffle the train dataset!
-    train_ds = tf.data.Dataset.from_tensor_slices((X_train, y_train)).shuffle(5).batch(batch_size)
-    dev_ds = tf.data.Dataset.from_tensor_slices((X_dev, y_dev)).shuffle(5).batch(batch_size)
+    train_ds = tf.data.Dataset.from_tensor_slices((X_train, y_train)).shuffle(len(X_train)).batch(batch_size)
+    dev_ds = tf.data.Dataset.from_tensor_slices((X_dev, y_dev)).batch(batch_size)
     test_ds = tf.data.Dataset.from_tensor_slices(X_test).shuffle(5).batch(batch_size)
     
     # TODO: Build the Keras model
@@ -184,11 +196,13 @@ def main():
         mlflow.log_param('numerical_columns', numeric_columns)  # Not using these yet
         mlflow.log_param('epochs', args.epochs)
 
+        early_stop = tf.keras.callbacks.EarlyStopping(monitor='accuracy', patience=5)
+
         # Train
         history = model.fit(train_ds, 
                             epochs=args.epochs, 
                             validation_data=dev_ds,
-                            verbose=1);
+                            verbose=1,  callbacks=[early_stop,]);
 
         # TODO: analyze history to see if model converges/overfits
         
@@ -216,10 +230,6 @@ def main():
         results = pandas.Series(predictions,name="AdoptionSpeed")
         submission = pandas.concat([pandas.Series(test_dataset.PID,name = "PID"),results],axis = 1)
         submission.to_csv("result_submission.csv",index=False)
-
-        # TODO: Convert predictions to classes
-        # TODO: Save the results for submission
-        # ...
         print(predictions)
 
         
