@@ -8,14 +8,34 @@ To know which GPU to use, you can check it with the command
 
 $ nvidia-smi
 """
+# Seed value (can actually be different for each attribution step)
+seed_value= 0
+
+# 1. Set `PYTHONHASHSEED` environment variable at a fixed value
+import os
+os.environ['PYTHONHASHSEED']=str(seed_value)
+
+# 2. Set `python` built-in pseudo-random generator at a fixed value
+import random
+random.seed(seed_value)
+
+# 3. Set `numpy` pseudo-random generator at a fixed value
+import numpy
+numpy.random.seed(seed_value)
+
+# 4. Set `tensorflow` pseudo-random generator at a fixed value
+import tensorflow as tf
+tf.random.set_seed(seed_value)
 
 import argparse
 
 import os
 import mlflow
-import numpy
+
 import pandas
-import tensorflow as tf
+
+from tensorflow.keras.utils import model_to_dot
+
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
@@ -27,9 +47,11 @@ from tensorflow.keras import optimizers, regularizers
 import matplotlib
 import matplotlib.pyplot as plt
 from IPython.display import SVG
-from tensorflow.keras.utils import model_to_dot
+
 TARGET_COL = 'AdoptionSpeed'
-tf.random.set_seed(1234)
+
+
+
 
 def read_args():
     parser = argparse.ArgumentParser(
@@ -62,6 +84,10 @@ def process_features(df, one_hot_columns, numeric_columns, embedded_columns, tes
         direct_features.append(tf.keras.utils.to_categorical(df[one_hot_col] - 1, max_value))
 
     df['SQAge'] = df['Age']  ** 2
+    
+    df["Description"] = df["Description"].fillna("")
+    df["len_des"] = df["Description"].apply(lambda x: len(x))
+    df["count_word"] = df["Description"].apply(lambda x: len(x.split(" ")))
     
     scaler = StandardScaler()
     direct_features.append(scaler.fit_transform(df[numeric_columns]))
@@ -116,9 +142,11 @@ def build_model(nlabels, direct_features_input_shape, embedded_columns, hidden_l
         
     # Concatenate everything together
     features = layers.concatenate(embedding_layers + [direct_features_input])
+    
     next_layer = features
+    ##next_layer = BatchNormalization(momentum=0)(features)
     for x, hidden_layer_num in enumerate(hidden_layer_sizes):
-        dense1 = layers.Dense(hidden_layer_num, activation='relu')(next_layer)
+        dense1 = layers.Dense(hidden_layer_num, activation='relu', )(next_layer)
         dropout1 = layers.Dropout(dropout[x])(dense1)
         next_layer = dropout1
         
@@ -137,20 +165,25 @@ def plot_history(history):
     plt.ylabel('Mean Abs Error [MPG]')
     plt.plot(hist['epoch'], hist['loss'],
            label='Loss')
+    plt.plot(hist['epoch'], hist['val_loss'],
+           label='Validation Loss')
+   
+    plt.legend()
+    plt.savefig('output/loss.png')
+    mlflow.log_artifact('output/loss.png') 
+
+    plt.figure()
+    plt.xlabel('Epoch')
+    plt.ylabel('Mean Abs Error [MPG]')
+    plt.plot(hist['epoch'], hist['val_accuracy'],
+           label = 'Validation Accuracy')
     plt.plot(hist['epoch'], hist['accuracy'],
            label = 'Accuracy')
     
-    
-    plt.plot(hist['epoch'], hist['val_loss'],
-           label='Validation Loss')
-    plt.plot(hist['epoch'], hist['val_accuracy'],
-           label = 'Validation Accuracy')
-    
-    
     plt.legend()
-    plt.savefig('output/history.png')
-    mlflow.log_artifact('output/history.png') 
-
+    plt.savefig('output/accuracy.png')
+    mlflow.log_artifact('output/accuracy.png') 
+    
 
 def main():
     tf.keras.backend.clear_session()
@@ -162,13 +195,13 @@ def main():
     # It's important to always use the same one-hot length
     one_hot_columns = {
         one_hot_col: dataset[one_hot_col].max()
-        for one_hot_col in ['Gender', 'Color1','Color2', 'Color3', 'Type']
+        for one_hot_col in [ 'Color1','Color2', 'Color3', 'Type']
     }
     embedded_columns = {
         embedded_col: dataset[embedded_col].max() + 1
         for embedded_col in ['Breed1','Breed2']
     }
-    numeric_columns = ['Age', 'Fee', 'SQAge']
+    numeric_columns = ['Age', 'Fee', 'SQAge',  "count_word"]
     
     # TODO (optional) put these three types of columns in the same dictionary with "column types"
     X_train, y_train = process_features(dataset, one_hot_columns, numeric_columns, embedded_columns)
@@ -187,7 +220,7 @@ def main():
     print(model.summary())
     
     model.compile(loss='categorical_crossentropy',
-                   optimizer=tf.keras.optimizers.Adam(learning_rate=0.005, amsgrad=True),
+                   optimizer=tf.keras.optimizers.Adam(learning_rate=0.0005),
                   metrics=['accuracy']) 
         
     #predictions = model.predict(test_ds)
